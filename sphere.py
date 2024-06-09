@@ -26,38 +26,40 @@ horizontal = torch.tensor([viewport_width, 0.0, 0.0], device=device)
 vertical = torch.tensor([0.0, viewport_height, 0.0], device=device)
 lower_left_corner = camera_origin - horizontal / 2 - vertical / 2 - torch.tensor([0.0, 0.0, focal_length], device=device)
 
-# Function to compute ray direction
-def get_ray_direction(u, v):
-    return lower_left_corner + u * horizontal + v * vertical - camera_origin
+# Function to compute ray directions for all pixels in the image
+def get_ray_directions(width, height):
+    u = torch.linspace(0, 1, width, device=device)
+    v = torch.linspace(0, 1, height, device=device)
+    u, v = torch.meshgrid(u, v)
+    directions = lower_left_corner + u.unsqueeze(-1) * horizontal + v.unsqueeze(-1) * vertical - camera_origin
+    return directions
 
 # Function to check ray-sphere intersection
 def ray_sphere_intersection(origin, direction, center, radius):
     oc = origin - center
-    a = torch.dot(direction, direction)
-    b = 2.0 * torch.dot(oc, direction)
-    c = torch.dot(oc, oc) - radius ** 2
+    a = torch.sum(direction ** 2, dim=-1)
+    b = 2.0 * torch.sum(oc * direction, dim=-1)
+    c = torch.sum(oc ** 2, dim=-1) - radius ** 2
     discriminant = b ** 2 - 4 * a * c
-    if discriminant < 0:
-        return False, None
+    hit = (discriminant >= 0)
     t = (-b - torch.sqrt(discriminant)) / (2.0 * a)
-    return True, t
+    t[discriminant < 0] = float('inf')
+    return hit, t
 
 # Render the scene
 def render_scene(width, height):
+    directions = get_ray_directions(width, height)
+    directions = F.normalize(directions, p=2, dim=-1)
+    hit, t = ray_sphere_intersection(camera_origin, directions, sphere_center, sphere_radius)
     pixels = torch.zeros((height, width, 3), device=device)
-    for j in range(height):
-        for i in range(width):
-            u = i / (width - 1)
-            v = j / (height - 1)
-            direction = get_ray_direction(u, v)
-            # Normalize the direction using F.normalize
-            direction = F.normalize(direction, p=2, dim=0)
-            hit, t = ray_sphere_intersection(camera_origin, direction, sphere_center, sphere_radius)
-            if hit:
-                point = camera_origin + t * direction
-                normal = F.normalize(point - sphere_center, p=2, dim=0)
-                color = 0.5 * (normal + 1.0) * sphere_color
-                pixels[j, i] = color
+    hit_pixels = hit.nonzero()
+    if hit_pixels.numel() > 0:
+        hit_directions = directions[hit_pixels[:, 0], hit_pixels[:, 1]]
+        hit_t = t[hit_pixels[:, 0], hit_pixels[:, 1]]
+        hit_points = camera_origin + hit_t.unsqueeze(-1) * hit_directions
+        hit_normals = F.normalize(hit_points - sphere_center, p=2, dim=-1)
+        hit_colors = 0.5 * (hit_normals + 1.0) * sphere_color
+        pixels[hit_pixels[:, 0], hit_pixels[:, 1]] = hit_colors
     return pixels.cpu().numpy()
 
 # Main function
